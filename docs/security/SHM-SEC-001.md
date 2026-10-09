@@ -29,3 +29,11 @@ Security maintenance and reporting follow [SECURITY.md](../../SECURITY.md).
 ## Source provenance
 
 [provenance.json](provenance.json) maps the original research identifiers to the newly imported source snapshots. The [source comparison](remediation-comparison.diff) is generated from those imported snapshots and shows the preserved correction and regression tests; it is not a claim that the fix was newly written during republication. Original PR/advisory records and full Git mirrors are retained in a verified local backup before the previous repositories are retired.
+
+## Verified runs after republication
+
+[Application CI run 37923236336](https://github.com/hang4309/shm-os265/actions/runs/37923236336) ran SHM API Guard commit `01121bf17dbe51357b11e6902d57dbb648d94393` against actual application commit `92f1f44c2ebbc53d78ce12cfac9fe3dcfae3090b`. All 87 backend tests and seven real API checks passed. The [unchanged downloaded report](current-source-report.json) records that source and tool identity, clean worktrees, and matching built/loaded JAR hashes.
+
+[Validator CI](https://github.com/KarlLee123/shm-api-guard/actions/runs/37923101219) passed 49 Python tests, verified the complete historical snapshot, reproduced its two expected header findings and passed all seven checks against the fixed snapshot. [Reports](https://github.com/KarlLee123/shm-api-guard/blob/main/reports/shm-sec-001.md#verified-runs-after-republication).
+
+The continued disclosure is published as [GHSA-hhx2-qjv9-3j82](https://github.com/hang4309/shm-os265/security/advisories/GHSA-hhx2-qjv9-3j82). It describes the existing finding and original provenance; no new discovery is claimed.

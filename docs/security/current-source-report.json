@@ -1,0 +1,561 @@
+{
+  "tool": "shm-api-guard",
+  "schema_version": 1,
+  "upstream": {
+    "verified": true,
+    "repository": "https://github.com/hang4309/shm-os265.git",
+    "expected_commit": "92f1f44c2ebbc53d78ce12cfac9fe3dcfae3090b",
+    "observed_commit": "92f1f44c2ebbc53d78ce12cfac9fe3dcfae3090b",
+    "mode": "current",
+    "source_tree": "8ea90331101aac44e3a5d4561eca55d4fb530efa",
+    "worktree_clean_before_and_after_build": true,
+    "built_jar_sha256": "e7b6a99c2df1af2f6b168ef170689fa9b990a614031bafc0045e45eff8b64861",
+    "loaded_jar_sha256": "e7b6a99c2df1af2f6b168ef170689fa9b990a614031bafc0045e45eff8b64861",
+    "runtime_pid": 2919,
+    "database": "isolated in-memory H2 with MySQL compatibility",
+    "attestation": "local runner observed checkout, built artifact, child process and its loaded upstream JAR; not third-party certification"
+  },
+  "checks": [
+    {
+      "name": "actual-mybatis-synthetic-reading",
+      "outcome": "pass",
+      "detail": "real upstream controller/service/mapper returned latest non-deleted strain fixture",
+      "evidence": {
+        "observed": {
+          "code": 200,
+          "message": "success",
+          "data": {
+            "channelNo": "CH2",
+            "collectTime": "2026-01-01 00:10:00",
+            "deviceNo": "SYNTHETIC-DEVICE",
+            "fiberNo": "CH2",
+            "intensity": 600.0,
+            "measuredValue": 600.0,
+            "moduleKey": "strain",
+            "rawValue": 600.0,
+            "sensorId": "FBG-STRAIN-CH2",
+            "sourceFile": "synthetic-only.txt",
+            "sourceLine": 600,
+            "sourceType": "OS265",
+            "wavelength": null,
+            "wavelengthShift": null
+          }
+        }
+      }
+    },
+    {
+      "name": "sql-input-is-bound",
+      "outcome": "pass",
+      "detail": "SQL metacharacters did not select other sensor rows",
+      "evidence": {
+        "observed": {
+          "code": 200,
+          "message": "success",
+          "data": null
+        }
+      }
+    },
+    {
+      "name": "history-resource-cap-and-isolation",
+      "outcome": "pass",
+      "detail": "large requested limit capped to 500 ordered rows of the requested sensor/module",
+      "evidence": {
+        "rows": 500
+      }
+    },
+    {
+      "name": "invalid-time-rejected",
+      "outcome": "pass",
+      "detail": "invalid temporal input rejected by real service",
+      "evidence": {
+        "observed": {
+          "code": 400,
+          "message": "startTime 格式错误，必须为 yyyy-MM-dd HH:mm:ss",
+          "data": null
+        }
+      }
+    },
+    {
+      "name": "reversed-time-range-rejected",
+      "outcome": "pass",
+      "detail": "reversed query range rejected",
+      "evidence": {
+        "observed": {
+          "code": 400,
+          "message": "startTime 不能晚于 endTime",
+          "data": null
+        }
+      }
+    },
+    {
+      "name": "forwarded-ip-trust",
+      "outcome": "pass",
+      "detail": "controls and varied-header requests were throttled; this bounded bypass attempt was not reproduced",
+      "evidence": {
+        "header": "X-Forwarded-For",
+        "requests": 48,
+        "maximum_requests": 48,
+        "maximum_phase_seconds": 0.5,
+        "phases": [
+          {
+            "phase": "baseline-before",
+            "elapsed_seconds": 0.033191,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          },
+          {
+            "phase": "varied-header",
+            "elapsed_seconds": 0.032575,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          },
+          {
+            "phase": "baseline-after",
+            "elapsed_seconds": 0.034818,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "forwarded-ip-trust",
+      "outcome": "pass",
+      "detail": "controls and varied-header requests were throttled; this bounded bypass attempt was not reproduced",
+      "evidence": {
+        "header": "X-Real-IP",
+        "requests": 48,
+        "maximum_requests": 48,
+        "maximum_phase_seconds": 0.5,
+        "phases": [
+          {
+            "phase": "baseline-before",
+            "elapsed_seconds": 0.033197,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          },
+          {
+            "phase": "varied-header",
+            "elapsed_seconds": 0.02637,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          },
+          {
+            "phase": "baseline-after",
+            "elapsed_seconds": 0.032283,
+            "accepted": 10,
+            "throttled": 6,
+            "observations": [
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 200,
+                "code": 200
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              },
+              {
+                "http": 429,
+                "code": 429
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "finding_count": 0,
+  "inconclusive_count": 0,
+  "revision": "current",
+  "mode": "current",
+  "expected_probe_outcome": "pass",
+  "expectations_met": true,
+  "tool_identity": {
+    "repository": "https://github.com/KarlLee123/shm-api-guard",
+    "observed_commit": "01121bf17dbe51357b11e6902d57dbb648d94393",
+    "source_tree": "96adf8797255089ad29ff3aa6e0bcee1e5d8b78b",
+    "worktree_clean_before_and_after_run": true
+  }
+}
