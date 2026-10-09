@@ -25,3 +25,7 @@ Keep forwarding strategy `NONE`. This process-local limiter covers selected hot 
 The [application workflow](../../.github/workflows/shm-api-guard.yml) pins the tool and validates the actual source event SHA, with source cleanliness and built/loaded artifact checks. The [backend tests](../../shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit) cover strict literals, proxy trust and deterministic refill behavior. Reports produced by the new runs carry new repository commits; historical execution reports are not relabeled as new results.
 
 Security maintenance and reporting follow [SECURITY.md](../../SECURITY.md).
+
+## Source provenance
+
+[provenance.json](provenance.json) maps the original research identifiers to the newly imported source snapshots. The [source comparison](remediation-comparison.diff) is generated from those imported snapshots and shows the preserved correction and regression tests; it is not a claim that the fix was newly written during republication. Original PR/advisory records and full Git mirrors are retained in a verified local backup before the previous repositories are retired.

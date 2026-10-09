@@ -1,0 +1,640 @@
+--- historical/shm-backend-fable5-copy/src/main/java/com/example/shm/common/ratelimit/ApiRateLimitFilter.java
++++ fixed/shm-backend-fable5-copy/src/main/java/com/example/shm/common/ratelimit/ApiRateLimitFilter.java
+@@ -2,18 +2,32 @@
+ 
+ import jakarta.servlet.FilterChain;
+ import jakarta.servlet.ServletException;
++import jakarta.servlet.ServletRequest;
++import jakarta.servlet.ServletRequestWrapper;
+ import jakarta.servlet.http.HttpServletRequest;
+ import jakarta.servlet.http.HttpServletResponse;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.core.Ordered;
++import org.springframework.core.annotation.Order;
+ import org.springframework.stereotype.Component;
+ import org.springframework.web.filter.OncePerRequestFilter;
+ 
+ import java.io.IOException;
+ import java.nio.charset.StandardCharsets;
++import java.util.Arrays;
++import java.util.HashSet;
++import java.util.Set;
++import java.util.Collections;
++import java.util.IdentityHashMap;
++import java.util.Objects;
++import java.util.Enumeration;
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.atomic.AtomicLong;
+ import java.util.regex.Pattern;
++import java.util.function.LongSupplier;
+ 
+ /**
+  * Per-endpoint, per-client-IP rate limiting for the hot data APIs.
+@@ -37,10 +51,11 @@
+  * short delay.
+  *
+  * Memory safety: each bucket stores lastAccessMillis; buckets idle for
+- * more than 5 minutes are pruned lazily at most once per minute, so the
+- * map cannot grow without bound and no background thread is needed.
++ * more than 5 minutes are pruned lazily at most once per minute. Active
++ * client count has no hard cap; this is not a distributed DoS boundary.
+  */
+ @Component
++@Order(Ordered.HIGHEST_PRECEDENCE)
+ public class ApiRateLimitFilter extends OncePerRequestFilter {
+ 
+     private static final Logger log = LoggerFactory.getLogger(ApiRateLimitFilter.class);
+@@ -58,15 +73,53 @@
+     private static final long CLEANUP_INTERVAL_MILLIS = 60 * 1000L;
+ 
+     private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+-    private final AtomicLong lastCleanupMillis = new AtomicLong(System.currentTimeMillis());
++    private final AtomicLong lastCleanupMillis;
++    private final Set<String> trustedProxyIps;
++    private final LongSupplier clockMillis;
++
++    @Autowired
++    public ApiRateLimitFilter(@Value("${shm.rate-limit.trusted-proxy-ips:}") String configuredProxyIps,
++                              @Value("${server.forward-headers-strategy:NONE}") String forwardingStrategy) {
++        this(configuredProxyIps, forwardingStrategy, () -> System.nanoTime() / 1_000_000L);
++    }
++
++    ApiRateLimitFilter(String configuredProxyIps, LongSupplier clockMillis) {
++        this(configuredProxyIps, "NONE", clockMillis);
++    }
++
++    private ApiRateLimitFilter(String configuredProxyIps, String forwardingStrategy, LongSupplier clockMillis) {
++        if (!"NONE".equalsIgnoreCase(forwardingStrategy.trim())) {
++            throw new IllegalArgumentException("The rate limiter requires server.forward-headers-strategy=NONE; "
++                    + "configure shm.rate-limit.trusted-proxy-ips and overwrite X-Real-IP at the proxy instead");
++        }
++        this.clockMillis = Objects.requireNonNull(clockMillis);
++        this.lastCleanupMillis = new AtomicLong(clockMillis.getAsLong());
++        Set<String> parsed = new HashSet<>();
++        Arrays.stream(configuredProxyIps.split(","))
++                .map(String::trim)
++                .filter(value -> !value.isEmpty())
++                .forEach(value -> {
++                    String normalized = IpAddressLiteral.canonical(value);
++                    if (normalized == null) {
++                        throw new IllegalArgumentException("Invalid trusted proxy IP address: " + value);
++                    }
++                    parsed.add(normalized);
++                });
++        this.trustedProxyIps = Set.copyOf(parsed);
++    }
+ 
+     @Override
+     protected void doFilterInternal(HttpServletRequest request,
+                                     HttpServletResponse response,
+                                     FilterChain filterChain)
+             throws ServletException, IOException {
+-        String path = request.getRequestURI();
+-        String method = request.getMethod();
++        HttpServletRequest original = originalRequest(request);
++        if (original == null) {
++            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Unsupported request wrapper");
++            return;
++        }
++        String path = original.getRequestURI();
++        String method = original.getMethod();
+ 
+         RateLimitRule rule = resolveRule(method, path);
+         if (rule == null) {
+@@ -74,10 +127,14 @@
+             return;
+         }
+ 
+-        long now = System.currentTimeMillis();
++        long now = clockMillis.getAsLong();
+         maybeCleanup(now);
+ 
+         String clientIp = resolveClientIp(request);
++        if (clientIp == null) {
++            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Invalid client socket address");
++            return;
++        }
+         String key = clientIp + "|" + method + "|" + path;
+         TokenBucket bucket = buckets.computeIfAbsent(
+                 key, ignored -> new TokenBucket(rule.burstCapacity(), rule.refillPerSecond(), now));
+@@ -87,7 +144,7 @@
+             return;
+         }
+ 
+-        log.warn("Rate limit rejected: clientIp={} method={} endpoint={} limit={} rate={}rps burst={} at={}",
++        log.warn("Rate limit rejected: clientIp={} method={} endpoint={} limit={} rate={}rps burst={} tickMs={}",
+                 clientIp, method, path, rule.name(), rule.refillPerSecond(), rule.burstCapacity(), now);
+ 
+         response.setStatus(429);
+@@ -112,28 +169,45 @@
+     }
+ 
+     /**
+-     * Client IP resolution: first X-Forwarded-For entry, then X-Real-IP,
+-     * then the socket address. Malformed or empty headers never throw.
++     * Trust X-Real-IP only when the socket peer is an explicitly configured
++     * reverse proxy. Read the original servlet request so a preceding framework
++     * wrapper cannot replace the peer with an untrusted forwarding header.
+      */
+-    private String resolveClientIp(HttpServletRequest request) {
+-        String forwarded = request.getHeader("X-Forwarded-For");
+-        if (forwarded != null) {
+-            int comma = forwarded.indexOf(',');
+-            String first = (comma >= 0 ? forwarded.substring(0, comma) : forwarded).trim();
+-            if (!first.isEmpty()) {
+-                return first;
+-            }
+-        }
+-        String realIp = request.getHeader("X-Real-IP");
+-        if (realIp != null && !realIp.trim().isEmpty()) {
+-            return realIp.trim();
+-        }
+-        return request.getRemoteAddr();
++    String resolveClientIp(HttpServletRequest request) {
++        HttpServletRequest original = originalRequest(request);
++        if (original == null) {
++            return null;
++        }
++        String remoteIp = IpAddressLiteral.canonical(original.getRemoteAddr());
++        if (remoteIp == null) {
++            return null;
++        }
++        if (trustedProxyIps.contains(remoteIp)) {
++            Enumeration<String> headers = original.getHeaders("X-Real-IP");
++            String value = headers != null && headers.hasMoreElements() ? headers.nextElement() : null;
++            String forwardedIp = headers != null && headers.hasMoreElements()
++                    ? null : IpAddressLiteral.canonical(value);
++            if (forwardedIp != null) {
++                return forwardedIp;
++            }
++        }
++        return remoteIp;
++    }
++
++    private static HttpServletRequest originalRequest(HttpServletRequest request) {
++        ServletRequest current = request;
++        Set<ServletRequest> seen = Collections.newSetFromMap(new IdentityHashMap<>());
++        while (current instanceof ServletRequestWrapper wrapper) {
++            if (seen.size() >= 32 || !seen.add(current)) {
++                return null;
++            }
++            current = wrapper.getRequest();
++        }
++        return current instanceof HttpServletRequest original ? original : null;
+     }
+ 
+     /**
+-     * Lazy pruning of idle buckets, at most once per minute, so the
+-     * limiter map cannot grow forever and the hot path stays cheap.
++     * Lazy pruning of idle buckets, at most once per minute.
+      */
+     private void maybeCleanup(long now) {
+         long last = lastCleanupMillis.get();
+--- historical/shm-backend-fable5-copy/src/main/java/com/example/shm/common/ratelimit/IpAddressLiteral.java
++++ fixed/shm-backend-fable5-copy/src/main/java/com/example/shm/common/ratelimit/IpAddressLiteral.java
+@@ -0,0 +1,106 @@
++package com.example.shm.common.ratelimit;
++
++import java.net.InetAddress;
++import java.net.UnknownHostException;
++
++/** Strict IPv4/IPv6 literals only. Parsing never invokes a name resolver. */
++final class IpAddressLiteral {
++    private IpAddressLiteral() {
++    }
++
++    static String canonical(String value) {
++        if (value == null || value.isEmpty() || value.length() > 45) {
++            return null;
++        }
++        byte[] address = value.indexOf(':') >= 0 ? ipv6(value) : ipv4(value);
++        if (address == null) {
++            return null;
++        }
++        try {
++            // getByAddress accepts bytes, performs no DNS, and normalizes IPv4-mapped IPv6.
++            return InetAddress.getByAddress(address).getHostAddress();
++        } catch (UnknownHostException impossibleLength) {
++            throw new IllegalStateException(impossibleLength);
++        }
++    }
++
++    private static byte[] ipv4(String value) {
++        String[] parts = value.split("\\.", -1);
++        if (parts.length != 4) {
++            return null;
++        }
++        byte[] result = new byte[4];
++        for (int i = 0; i < parts.length; i++) {
++            String part = parts[i];
++            if (part.isEmpty() || part.length() > 3 || (part.length() > 1 && part.charAt(0) == '0')) {
++                return null;
++            }
++            int number = 0;
++            for (int j = 0; j < part.length(); j++) {
++                char digit = part.charAt(j);
++                if (digit < '0' || digit > '9') {
++                    return null;
++                }
++                number = number * 10 + digit - '0';
++            }
++            if (number > 255) {
++                return null;
++            }
++            result[i] = (byte) number;
++        }
++        return result;
++    }
++
++    private static byte[] ipv6(String value) {
++        if (value.indexOf('.') >= 0) {
++            int colon = value.lastIndexOf(':');
++            byte[] tail = ipv4(value.substring(colon + 1));
++            if (tail == null) {
++                return null;
++            }
++            value = value.substring(0, colon + 1)
++                    + Integer.toHexString((tail[0] & 255) * 256 + (tail[1] & 255)) + ":"
++                    + Integer.toHexString((tail[2] & 255) * 256 + (tail[3] & 255));
++        }
++        int compression = value.indexOf("::");
++        if (compression >= 0 && value.indexOf("::", compression + 2) >= 0) {
++            return null;
++        }
++        String leftText = compression < 0 ? value : value.substring(0, compression);
++        String rightText = compression < 0 ? "" : value.substring(compression + 2);
++        String[] left = leftText.isEmpty() ? new String[0] : leftText.split(":", -1);
++        String[] right = rightText.isEmpty() ? new String[0] : rightText.split(":", -1);
++        int groups = left.length + right.length;
++        if (compression < 0 ? groups != 8 : groups >= 8) {
++            return null;
++        }
++        byte[] result = new byte[16];
++        if (!writeGroups(left, result, 0) || !writeGroups(right, result, 8 - right.length)) {
++            return null;
++        }
++        return result;
++    }
++
++    private static boolean writeGroups(String[] groups, byte[] result, int offset) {
++        for (String group : groups) {
++            if (group.isEmpty() || group.length() > 4) {
++                return false;
++            }
++            int number = 0;
++            for (int i = 0; i < group.length(); i++) {
++                char digit = group.charAt(i);
++                int hex = digit >= '0' && digit <= '9' ? digit - '0'
++                        : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
++                        : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10 : -1;
++                if (hex < 0) {
++                    return false;
++                }
++                number = number * 16 + hex;
++            }
++            result[offset * 2] = (byte) (number >>> 8);
++            result[offset * 2 + 1] = (byte) number;
++            offset++;
++        }
++        return true;
++    }
++}
+--- historical/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/ApiRateLimitFilterTest.java
++++ fixed/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/ApiRateLimitFilterTest.java
+@@ -0,0 +1,189 @@
++package com.example.shm.common.ratelimit;
++
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletRequestWrapper;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.springframework.context.annotation.AnnotationConfigApplicationContext;
++import org.springframework.core.env.SystemEnvironmentPropertySource;
++import org.springframework.mock.web.MockFilterChain;
++import org.springframework.mock.web.MockHttpServletRequest;
++import org.springframework.mock.web.MockHttpServletResponse;
++import org.springframework.web.filter.ForwardedHeaderFilter;
++
++import java.util.Map;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.concurrent.atomic.AtomicLong;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class ApiRateLimitFilterTest {
++    private static ApiRateLimitFilter filter(String proxies) {
++        return new ApiRateLimitFilter(proxies, () -> 0L);
++    }
++
++    static MockHttpServletRequest request(String peer, int sequence) {
++        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/data/strain/latest");
++        request.setRequestURI("/api/data/strain/latest");
++        request.setRemoteAddr(peer);
++        request.addHeader("X-Forwarded-For", "198.51.100." + sequence);
++        request.addHeader("X-Real-IP", "192.0.2." + sequence);
++        return request;
++    }
++
++    @Test
++    void directClientsCannotChooseRateLimitIdentityWithForwardingHeaders() {
++        assertEquals("203.0.113.10", filter("").resolveClientIp(request("203.0.113.10", 1)));
++    }
++
++    @Test
++    void rotatingForwardedHeadersCannotBypassThePerPeerBurstLimit() throws Exception {
++        ApiRateLimitFilter filter = filter("");
++        AtomicInteger reachedEndpoint = new AtomicInteger();
++        for (int i = 1; i <= 12; i++) {
++            MockHttpServletResponse response = new MockHttpServletResponse();
++            filter.doFilter(request("203.0.113.10", i), response,
++                    (req, res) -> reachedEndpoint.incrementAndGet());
++            assertEquals(i <= 10 ? 200 : 429, response.getStatus(), "request " + i);
++            if (i > 10) {
++                assertEquals("1", response.getHeader("Retry-After"));
++            }
++        }
++        assertEquals(10, reachedEndpoint.get());
++    }
++
++    @Test
++    void refillsExactlyOneTokenAfterOneHundredMilliseconds() throws Exception {
++        AtomicLong clock = new AtomicLong();
++        ApiRateLimitFilter filter = new ApiRateLimitFilter("", clock::get);
++        for (int i = 0; i < 10; i++) {
++            filter.doFilter(request("203.0.113.10", i), new MockHttpServletResponse(), new MockFilterChain());
++        }
++        clock.set(99);
++        MockHttpServletResponse before = new MockHttpServletResponse();
++        filter.doFilter(request("203.0.113.10", 11), before, new MockFilterChain());
++        assertEquals(429, before.getStatus());
++        clock.set(100);
++        MockHttpServletResponse after = new MockHttpServletResponse();
++        filter.doFilter(request("203.0.113.10", 12), after, new MockFilterChain());
++        assertEquals(200, after.getStatus());
++    }
++
++    @Test
++    void configuredProxyMaySupplyAValidatedRealIp() {
++        assertEquals("192.0.2.1", filter("127.0.0.1, ::1").resolveClientIp(request("127.0.0.1", 1)));
++        assertEquals("192.0.2.1", filter("::1").resolveClientIp(request("0:0:0:0:0:0:0:1", 1)));
++        assertEquals("192.0.2.1", filter("127.0.0.1").resolveClientIp(request("::ffff:127.0.0.1", 1)));
++    }
++
++    @Test
++    void separateDirectPeersAndTrustedClientIpsHaveSeparateBuckets() throws Exception {
++        for (String proxies : new String[]{"", "127.0.0.1"}) {
++            ApiRateLimitFilter filter = filter(proxies);
++            for (int i = 1; i <= 12; i++) {
++                MockHttpServletRequest request = request(proxies.isEmpty() ? "203.0.113." + i : "127.0.0.1", i);
++                MockHttpServletResponse response = new MockHttpServletResponse();
++                filter.doFilter(request, response, new MockFilterChain());
++                assertEquals(200, response.getStatus());
++            }
++        }
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"cafe", "face", "dead.beef", "proxy.example", "127.1", "2130706433",
++            "127.00.0.1", "256.0.0.1", "127.0.0.1/32", "127.0.0.1:80", "[::1]", "fe80::1%eth0",
++            "1::2::3", ":::", "::ffff:127.01.0.1"})
++    void invalidTrustedProxyConfigurationFailsFast(String invalid) {
++        assertThrows(IllegalArgumentException.class, () -> filter(invalid));
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"", "cafe", "attacker.example", "127.1", "192.0.2.1, 192.0.2.2",
++            "[::1]", ":::", " 192.0.2.1", "192.0.2.1 ", "::ffff:127.01.0.1"})
++    void invalidForwardedAddressFallsBackToTrustedProxyPeer(String invalid) {
++        MockHttpServletRequest request = request("127.0.0.1", 1);
++        request.removeHeader("X-Real-IP");
++        request.addHeader("X-Real-IP", invalid);
++        assertEquals("127.0.0.1", filter("127.0.0.1").resolveClientIp(request));
++    }
++
++    @Test
++    void missingRealIpDoesNotFallBackToForwardedFor() {
++        MockHttpServletRequest request = request("127.0.0.1", 1);
++        request.removeHeader("X-Real-IP");
++        assertEquals("127.0.0.1", filter("127.0.0.1").resolveClientIp(request));
++    }
++
++    @Test
++    void repeatedRealIpHeadersFallBackToProxyPeer() {
++        MockHttpServletRequest request = request("127.0.0.1", 1);
++        request.addHeader("X-Real-IP", "192.0.2.99");
++        assertEquals("127.0.0.1", filter("127.0.0.1").resolveClientIp(request));
++    }
++
++    @Test
++    void malformedSocketAddressFailsClosed() throws Exception {
++        MockHttpServletResponse response = new MockHttpServletResponse();
++        filter("").doFilter(request("cafe", 1), response, (req, res) -> fail("endpoint must not run"));
++        assertEquals(400, response.getStatus());
++    }
++
++    @Test
++    void precedingForwardedHeaderFilterCannotChangeIdentityOrProtectedPath() throws Exception {
++        ApiRateLimitFilter filter = filter("");
++        for (int i = 1; i <= 12; i++) {
++            MockHttpServletRequest original = request("203.0.113.10", i);
++            original.addHeader("X-Forwarded-Prefix", "/forged");
++            MockHttpServletResponse response = new MockHttpServletResponse();
++            new ForwardedHeaderFilter().doFilter(original, response, (req, res) -> {
++                assertNotEquals(original.getRemoteAddr(), req.getRemoteAddr());
++                assertEquals("203.0.113.10", filter.resolveClientIp((HttpServletRequest) req));
++                filter.doFilter(req, res, new MockFilterChain());
++            });
++            assertEquals(i <= 10 ? 200 : 429, response.getStatus());
++        }
++    }
++
++    @Test
++    void excessiveWrappingFailsClosed() throws Exception {
++        HttpServletRequest wrapped = request("203.0.113.10", 1);
++        for (int i = 0; i < 33; i++) {
++            wrapped = new HttpServletRequestWrapper(wrapped);
++        }
++        MockHttpServletResponse response = new MockHttpServletResponse();
++        filter("").doFilter(wrapped, response, (req, res) -> fail("endpoint must not run"));
++        assertEquals(400, response.getStatus());
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"NATIVE", "FRAMEWORK", "native", "framework", ""})
++    void forwardingStrategiesThatRewriteTheSocketPeerAreRejected(String strategy) {
++        assertThrows(IllegalArgumentException.class, () -> new ApiRateLimitFilter("", strategy));
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"native", "framework"})
++    void unsafeForwardingEnvironmentSettingPreventsContextStartup(String strategy) {
++        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
++            context.getEnvironment().getPropertySources().addFirst(new SystemEnvironmentPropertySource("test-env",
++                    Map.of("SERVER_FORWARD_HEADERS_STRATEGY", strategy)));
++            context.register(ApiRateLimitFilter.class);
++            Exception failure = assertThrows(org.springframework.beans.factory.BeanCreationException.class,
++                    context::refresh);
++            assertTrue(failure.getMessage().contains("ApiRateLimitFilter"));
++        }
++    }
++
++    @Test
++    void environmentVariableBindsToTrustedProxyConfiguration() {
++        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
++            context.getEnvironment().getPropertySources().addFirst(new SystemEnvironmentPropertySource("test-env",
++                    Map.of("SHM_RATE_LIMIT_TRUSTED_PROXY_IPS", "127.0.0.1")));
++            context.register(ApiRateLimitFilter.class);
++            context.refresh();
++            assertEquals("192.0.2.1", context.getBean(ApiRateLimitFilter.class)
++                    .resolveClientIp(request("127.0.0.1", 1)));
++        }
++    }
++}
+--- historical/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/ApiRateLimitHttpTest.java
++++ fixed/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/ApiRateLimitHttpTest.java
+@@ -0,0 +1,89 @@
++package com.example.shm.common.ratelimit;
++
++import jakarta.servlet.http.HttpServlet;
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++import org.apache.catalina.Context;
++import org.apache.catalina.startup.Tomcat;
++import org.apache.tomcat.util.descriptor.web.FilterDef;
++import org.apache.tomcat.util.descriptor.web.FilterMap;
++import org.junit.jupiter.api.io.TempDir;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.ValueSource;
++import org.springframework.web.filter.ForwardedHeaderFilter;
++
++import java.io.IOException;
++import java.net.HttpURLConnection;
++import java.net.Proxy;
++import java.net.URI;
++import java.nio.file.Path;
++import java.util.concurrent.atomic.AtomicInteger;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++/** Real local sockets/container filter dispatch; time is fixed, so request duration cannot affect the count. */
++class ApiRateLimitHttpTest {
++    @TempDir
++    Path temporaryDirectory;
++
++    @ParameterizedTest
++    @ValueSource(booleans = {false, true})
++    void realHttpRotatingHeadersShareOneSocketPeerBucket(boolean precedingForwardedFilter) throws Exception {
++        Tomcat server = new Tomcat();
++        server.setBaseDir(temporaryDirectory.toString());
++        server.setPort(0);
++        server.getConnector().setProperty("address", "127.0.0.1");
++        Context context = server.addContext("", temporaryDirectory.toString());
++        AtomicInteger reachedEndpoint = new AtomicInteger();
++        Tomcat.addServlet(context, "synthetic-endpoint", new HttpServlet() {
++            @Override
++            protected void doPost(HttpServletRequest request, HttpServletResponse response) throws IOException {
++                reachedEndpoint.incrementAndGet();
++                response.setContentType("application/json");
++                response.getWriter().write("{\"synthetic\":true}");
++            }
++        });
++        context.addServletMappingDecoded("/*", "synthetic-endpoint");
++        if (precedingForwardedFilter) {
++            register(context, "forwarded", new ForwardedHeaderFilter());
++        }
++        register(context, "limiter", new ApiRateLimitFilter("", () -> 0L));
++        try {
++            server.start();
++            URI target = URI.create("http://127.0.0.1:" + server.getConnector().getLocalPort()
++                    + "/api/data/strain/latest");
++            for (int i = 1; i <= 12; i++) {
++                HttpURLConnection connection = (HttpURLConnection) target.toURL().openConnection(Proxy.NO_PROXY);
++                connection.setConnectTimeout(3000);
++                connection.setReadTimeout(3000);
++                connection.setRequestMethod("POST");
++                connection.setRequestProperty("X-Forwarded-For", "198.51.100." + i);
++                connection.setRequestProperty("X-Real-IP", "192.0.2." + i);
++                connection.setRequestProperty("X-Forwarded-Prefix", "/forged");
++                try {
++                    assertEquals(i <= 10 ? 200 : 429, connection.getResponseCode(), "request " + i);
++                    if (i > 10) {
++                        assertEquals("1", connection.getHeaderField("Retry-After"));
++                    }
++                } finally {
++                    connection.disconnect();
++                }
++            }
++            assertEquals(10, reachedEndpoint.get());
++        } finally {
++            server.stop();
++            server.destroy();
++        }
++    }
++
++    private static void register(Context context, String name, jakarta.servlet.Filter filter) {
++        FilterDef definition = new FilterDef();
++        definition.setFilterName(name);
++        definition.setFilter(filter);
++        context.addFilterDef(definition);
++        FilterMap mapping = new FilterMap();
++        mapping.setFilterName(name);
++        mapping.addURLPattern("/*");
++        context.addFilterMap(mapping);
++    }
++}
+--- historical/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/IpAddressLiteralTest.java
++++ fixed/shm-backend-fable5-copy/src/test/java/com/example/shm/common/ratelimit/IpAddressLiteralTest.java
+@@ -0,0 +1,39 @@
++package com.example.shm.common.ratelimit;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.params.ParameterizedTest;
++import org.junit.jupiter.params.provider.CsvSource;
++import org.junit.jupiter.params.provider.ValueSource;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++class IpAddressLiteralTest {
++    @ParameterizedTest
++    @CsvSource({
++            "0.0.0.0, 0.0.0.0", "255.255.255.255, 255.255.255.255", "192.0.2.9, 192.0.2.9",
++            "::, 0:0:0:0:0:0:0:0", "::1, 0:0:0:0:0:0:0:1",
++            "2001:DB8::1, 2001:db8:0:0:0:0:0:1", "1:2:3:4:5:6:7:8, 1:2:3:4:5:6:7:8",
++            "1:2:3:4:5:6:7::, 1:2:3:4:5:6:7:0", "::ffff:192.0.2.1, 192.0.2.1",
++            "0:0:0:0:0:FFFF:c000:201, 192.0.2.1", "2001:db8::192.0.2.1, 2001:db8:0:0:0:0:c000:201"
++    })
++    void canonicalizesValidLiterals(String input, String expected) {
++        assertEquals(expected, IpAddressLiteral.canonical(input));
++    }
++
++    @ParameterizedTest
++    @ValueSource(strings = {"cafe", "face", "dead.beef", "127.1", "1", "2130706433", "0x7f000001",
++            "1.2.3.4.", "1.2.3", "1.2.3.256", "01.2.3.4", "1.2.3.-1", "1.2.3.+1", "1.2.3.４",
++            ":", ":::1", "1:::2", "1::2::3", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9",
++            "1:2:3:4:5:6:7:8::", "1:2:3:4:5:6:7::8", "12345::", "gg::", "[::1]",
++            "fe80::1%3", "::ffff:127.1", "::ffff:192.168.01.1", "1:2:3:4:5:6:7:192.0.2.1"})
++    void rejectsNonLiteralsAndMalformedAddresses(String input) {
++        assertNull(IpAddressLiteral.canonical(input));
++    }
++
++    @Test
++    void nullAndWhitespaceAreNotAddresses() {
++        assertNull(IpAddressLiteral.canonical(null));
++        assertNull(IpAddressLiteral.canonical(""));
++        assertNull(IpAddressLiteral.canonical(" ::1 "));
++    }
++}
+--- historical/shm-backend-fable5-copy/src/main/resources/application.yml
++++ fixed/shm-backend-fable5-copy/src/main/resources/application.yml
+@@ -1,3 +1,7 @@
++server:
++  # The rate limiter must receive the socket peer, before forwarding rewrites.
++  forward-headers-strategy: NONE
++
+ spring:
+   application:
+     name: shm-backend

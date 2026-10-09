@@ -1,0 +1,33 @@
+{
+  "record_type": "Republication provenance for the existing SHM-SEC-001 finding, not a new discovery",
+  "original_source": {
+    "repository": "https://github.com/hang4309/shm-sanitized-source",
+    "historical_commit": "51aefef11004e79227d47bb870caa0c09dd9b1be",
+    "backend_git_tree": "0329023f37b4107f7b640c8c9c5a7818e695214e",
+    "record_type": "Original source identifiers retained solely for provenance; these are not commits in the new repository",
+    "capture": "Preserved in verified local Git mirror before republication; imported backend content is unchanged"
+  },
+  "original_remediation": {
+    "commit": "0c835d5ae9430164e914e9a55b8d1c07fac639e1",
+    "merged_commit": "21159f8b732067cfc248d3e6230abc8001a0e5e8",
+    "pull_request_number": 1,
+    "repository": "hang4309/shm-sanitized-source"
+  },
+  "original_disclosure": {
+    "ghsa_id": "GHSA-7hhv-g4ww-c8j3",
+    "published_at": "2026-10-09T10:47:54Z",
+    "severity": "low",
+    "cve_id": null,
+    "cwe_ids": [
+      "CWE-807"
+    ]
+  },
+  "republished_sources": {
+    "repository": "https://github.com/hang4309/shm-os265",
+    "fixed_commit": "ce4193f3428970b3d4cedaf73897a685fcf95c80",
+    "baseline_commit": "44118727066aea33d7197ce153be7e7517f1776e",
+    "baseline_backend_tree": "0329023f37b4107f7b640c8c9c5a7818e695214e",
+    "baseline_manifest_sha256": "6c15edfdb5547c1fd90052d59e29dcd7b8dd090faee7774d6330ace126595c87"
+  },
+  "identity_note": "Original identifiers describe the earlier research record and are not commits or PRs in this new repository. New execution evidence uses republished_sources. Original records and Git mirrors were preserved locally before retirement."
+}
